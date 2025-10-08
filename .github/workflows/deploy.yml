@@ -1,12 +1,26 @@
 name: Deploy Infra Kubernetes
+
 on:
   push:
+    branches:
+      - main  # Só executa o deploy após merge na main
+  pull_request:
+    branches:
+      - main  # Roda validação em PRs antes do merge
+
+permissions:
+  contents: read
+  id-token: write  # necessário para autenticação OIDC (caso queira migrar depois)
+  pull-requests: write
 
 jobs:
-  deploy:
+  terraform:
+    name: Validate & Deploy Infra
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -23,5 +37,13 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan
+
+      # Este passo só roda quando for um push (merge) na branch main
       - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: terraform apply -auto-approve
