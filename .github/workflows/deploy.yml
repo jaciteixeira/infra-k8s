@@ -3,7 +3,7 @@ name: Deploy Infra Kubernetes
 on:
   push:
     branches:
-      - main  # Só executa o deploy após merge na main 
+      - main  # Só executa o deploy após merge na main
   pull_request:
     branches:
       - main  # Roda validação em PRs antes do merge
