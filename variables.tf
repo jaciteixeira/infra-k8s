@@ -1,5 +1,6 @@
+#variables.tf
 variable "region" {
-  default = "us-east-1"
+  default = "sa-east-1"
 }
 
 variable "cluster_name" {
@@ -24,5 +25,5 @@ variable "node_max" {
 
 variable "instance_types" {
   type    = list(string)
-  default = ["t3.micro"]
+  default = ["t3.small"]
 }

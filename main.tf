@@ -94,6 +94,12 @@ resource "aws_iam_role_policy_attachment" "node_policy" {
   role = aws_iam_role.eks_node_role.name
 }
 
+resource "aws_iam_role_policy_attachment" "ebs_csi" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+  role       = aws_iam_role.eks_node_role.name
+}
+
+
 # -------------------------
 # EKS Cluster
 # -------------------------
@@ -117,7 +123,7 @@ resource "aws_eks_node_group" "ng" {
   cluster_name    = aws_eks_cluster.this.name
   node_group_name = "${var.cluster_name}-ng"
   node_role_arn   = aws_iam_role.eks_node_role.arn
-  subnet_ids      = aws_subnet.private[*].id
+  subnet_ids = aws_subnet.public[*].id
 
   scaling_config {
     desired_size = var.node_desired
@@ -129,24 +135,12 @@ resource "aws_eks_node_group" "ng" {
 }
 
 # -------------------------
-# Provider Kubernetes
-# -------------------------
-data "aws_eks_cluster_auth" "cluster" {
-  name = aws_eks_cluster.this.name
-}
-
-provider "kubernetes" {
-  host                   = aws_eks_cluster.this.endpoint
-  cluster_ca_certificate = base64decode(aws_eks_cluster.this.certificate_authority[0].data)
-  token                  = data.aws_eks_cluster_auth.cluster.token
-}
-
-# -------------------------
 # ECR Repository
 # -------------------------
 resource "aws_ecr_repository" "app" {
   name                 = "tech-challenge-app"
   image_tag_mutability = "MUTABLE"
+  force_delete = true
 
   image_scanning_configuration {
     scan_on_push = true
@@ -157,73 +151,45 @@ output "ecr_repo_url" {
   value = aws_ecr_repository.app.repository_url
 }
 
-# -------------------------
-# Postgres Kubernetes
-# -------------------------
-resource "kubernetes_secret" "postgres" {
-  metadata {
-    name = "postgres-secret"
-  }
-  data = {
-    POSTGRES_USER     = base64encode("postgres")
-    POSTGRES_PASSWORD = base64encode("postgres")
-    POSTGRES_DB       = base64encode("techchallenge")
-  }
+resource "aws_iam_openid_connect_provider" "eks" {
+  url             = aws_eks_cluster.this.identity[0].oidc[0].issuer
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["9e99a48a9960b14926bb7f3b02e22da0e8e8c3a2"]
 }
 
-resource "kubernetes_deployment" "postgres" {
-  metadata { name = "postgres" }
-  spec {
-    replicas = 1
-    selector { match_labels = { app = "postgres" } }
-    template {
-      metadata { labels = { app = "postgres" } }
-      spec {
-        container {
-          name  = "postgres"
-          image = "postgres:14"
-          port { container_port = 5432 }
-          env {
-            name = "POSTGRES_USER"
-            value_from {
-              secret_key_ref {
-                name = kubernetes_secret.postgres.metadata[0].name
-                key  = "POSTGRES_USER"
-              }
-            }
-          }
-          env {
-            name = "POSTGRES_PASSWORD"
-            value_from {
-              secret_key_ref {
-                name = kubernetes_secret.postgres.metadata[0].name
-                key  = "POSTGRES_PASSWORD"
-              }
-            }
-          }
-          env {
-            name = "POSTGRES_DB"
-            value_from {
-              secret_key_ref {
-                name = kubernetes_secret.postgres.metadata[0].name
-                key  = "POSTGRES_DB"
-              }
-            }
+resource "aws_iam_role" "ebs_csi_sa_role" {
+  name = "AmazonEKS_EBS_CSI_DriverRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.eks.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "${replace(aws_iam_openid_connect_provider.eks.url, "https://", "")}:sub" = "system:serviceaccount:kube-system:ebs-csi-controller-sa"
           }
         }
       }
-    }
-  }
+    ]
+  })
 }
 
-resource "kubernetes_service" "postgres" {
-  metadata { name = "postgres" }
-  spec {
-    selector = { app = "postgres" }
-    port {
-      port        = 5432
-      target_port = 5432
+resource "aws_iam_role_policy_attachment" "ebs_csi_policy" {
+  policy_arn = "arn:aws:iam::065939301012:policy/AmazonEKS_EBS_CSI_Driver_Policy"
+  role       = aws_iam_role.ebs_csi_sa_role.name
+}
+
+resource "kubernetes_service_account" "ebs_csi" {
+  metadata {
+    name      = "ebs-csi-controller-sa"
+    namespace = "kube-system"
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.ebs_csi_sa_role.arn
     }
-    type = "ClusterIP"
   }
 }
